@@ -1,0 +1,544 @@
+// DLand data model
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  CLIENT // lists land for sale and buys land: the same person can do both
+  NOTARY // verifies listings and handles sale files
+  ADMIN // oversees users, listings, sales and reports
+}
+
+enum Language {
+  en
+  fr
+  es
+}
+
+enum LandType {
+  RESIDENTIAL
+  COMMERCIAL
+  AGRICULTURAL
+  INDUSTRIAL
+  MIXED
+}
+
+enum LandStatus {
+  DRAFT // created by the seller, not yet submitted
+  PENDING_VERIFICATION // waiting for a notary
+  REJECTED // notary rejected, seller can edit & resubmit
+  PUBLISHED // verified and visible to everyone
+  UNDER_OFFER // an offer was accepted, transfer awaiting notary
+  SOLD // ownership transferred (can be re-listed by the new owner)
+  ARCHIVED // hidden by the owner
+}
+
+enum DocumentType {
+  TITLE_DEED
+  SURVEY_PLAN
+  TAX_RECEIPT
+  ID_DOCUMENT
+  OTHER
+}
+
+enum VerificationDecision {
+  APPROVED
+  REJECTED
+}
+
+enum OfferStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
+  CANCELLED
+}
+
+enum TransferStatus {
+  PENDING_NOTARY // waiting for a notary to take the file
+  IN_PROGRESS // a notary took it: payments are made off-platform and confirmed step by step
+  COMPLETED // deed signed, ownership moved on the chain
+  CANCELLED
+}
+
+// Milestones of a sale. Money never transits through DLand: the buyer pays the notary's
+// escrow account and uploads the receipt; the notary confirms each step.
+enum TransferStepType {
+  DEPOSIT
+  BALANCE
+  DEED_SIGNED
+  REGISTERED // new owner recorded at the official land registry
+}
+
+enum TransferStepStatus {
+  PENDING
+  SUBMITTED // buyer uploaded a receipt
+  CONFIRMED
+  REJECTED
+}
+
+enum BlockType {
+  GENESIS
+  LAND_REGISTERED
+  OWNERSHIP_TRANSFERRED
+  // Boundary added to a land that was registered before it had one
+  BOUNDARY_RECORDED
+  // A notary confirmed an off-platform payment (receipt fingerprint recorded)
+  PAYMENT_CONFIRMED
+  // The sale was recorded at the official land registry
+  REGISTRY_RECORDED
+}
+
+enum NotificationType {
+  LAND_SUBMITTED
+  LAND_APPROVED
+  LAND_REJECTED
+  OFFER_RECEIVED
+  OFFER_ACCEPTED
+  OFFER_REJECTED
+  OFFER_WITHDRAWN
+  TRANSFER_PENDING
+  TRANSFER_COMPLETED
+  TRANSFER_CANCELLED
+  NEW_MESSAGE
+  NEW_REVIEW
+  TRANSFER_CLAIMED // a notary took the file: payment instructions are available
+  PAYMENT_PROOF_SUBMITTED
+  PAYMENT_CONFIRMED
+  PAYMENT_REJECTED
+  TITLE_REGISTERED
+  SYSTEM
+}
+
+enum ReportStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
+}
+
+// ---------------------------------------------------------------------------
+// Users & auth
+// ---------------------------------------------------------------------------
+
+model User {
+  id                  String   @id @default(uuid())
+  email               String   @unique
+  passwordHash        String
+  firstName           String
+  lastName            String
+  phone               String?
+  avatarUrl           String?
+  bio                 String?
+  city                String?
+  country             String?
+  language            Language @default(en)
+  role                Role     @default(CLIENT)
+  isActive            Boolean  @default(true)
+  // Pseudonymous identity written to the blockchain instead of personal data
+  walletAddress       String   @unique
+  // Notary-only: professional licence number
+  licenseNumber       String?
+  // Notary-only: escrow account buyers pay into (DLand never holds funds)
+  escrowBankName      String?
+  escrowAccountName   String?
+  escrowAccountNumber String?
+  escrowMobileMoney   String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  refreshTokens       RefreshToken[]
+  passwordResets      PasswordReset[]
+  ownedLands          Land[]             @relation("owner")
+  reviewedLands       Land[]             @relation("notary")
+  verifications       LandVerification[]
+  favorites           Favorite[]
+  offersMade          Offer[]            @relation("buyer")
+  transfersAsSeller   Transfer[]         @relation("transferSeller")
+  transfersAsBuyer    Transfer[]         @relation("transferBuyer")
+  transfersAsNotary   Transfer[]         @relation("transferNotary")
+  conversationsBuyer  Conversation[]     @relation("convBuyer")
+  conversationsSeller Conversation[]     @relation("convSeller")
+  messages            Message[]
+  notifications       Notification[]
+  reports             Report[]
+  reviewsReceived     Review[]           @relation("reviewSeller")
+  reviewsWritten      Review[]           @relation("reviewAuthor")
+  signedBlocks        Block[]
+  auditLogs           AuditLog[]
+  stepsSubmitted      TransferStep[]     @relation("stepSubmitter")
+  stepsConfirmed      TransferStep[]     @relation("stepConfirmer")
+
+  @@index([role])
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  tokenHash String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model PasswordReset {
+  id        String    @id @default(uuid())
+  codeHash  String
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Land
+// ---------------------------------------------------------------------------
+
+model Land {
+  id                String     @id @default(uuid())
+  // Human readable reference, e.g. DL-2026-000042
+  reference         String     @unique
+  title             String
+  description       String
+  price             Decimal    @db.Decimal(18, 2)
+  currency          String     @default("USD")
+  areaSqm           Float
+  landType          LandType
+  address           String
+  city              String
+  region            String?
+  country           String
+  latitude          Float?
+  longitude         Float?
+  // Official cadastral identifiers
+  parcelNumber      String
+  titleDeedNumber   String
+  status            LandStatus @default(DRAFT)
+  ownerId           String
+  owner             User       @relation("owner", fields: [ownerId], references: [id])
+  notaryId          String?
+  notary            User?      @relation("notary", fields: [notaryId], references: [id])
+  rejectionReason   String?
+  // Set once a notary has registered the land on the chain
+  registeredOnChain Boolean    @default(false)
+  // Parcel outline as a GeoJSON Polygon ([lng, lat] ring). Its SHA-256 is written to the chain.
+  boundary          Json?
+  boundaryHash      String?
+  // Geodesic area measured from the boundary (vs. the declared areaSqm)
+  boundaryAreaSqm   Float?
+  // Set once the current boundary is recorded in a block; the boundary is then immutable
+  boundaryOnChain   Boolean    @default(false)
+  // Bounding box of the boundary, used to prefilter overlap checks and map queries
+  minLat            Float?
+  maxLat            Float?
+  minLng            Float?
+  maxLng            Float?
+  submittedAt       DateTime?
+  publishedAt       DateTime?
+  viewsCount        Int        @default(0)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  images        LandImage[]
+  documents     LandDocument[]
+  verifications LandVerification[]
+  favorites     Favorite[]
+  offers        Offer[]
+  transfers     Transfer[]
+  conversations Conversation[]
+  reports       Report[]
+  blocks        Block[]
+
+  @@unique([parcelNumber, country])
+  @@index([status])
+  @@index([city])
+  @@index([ownerId])
+  @@index([minLat, maxLat, minLng, maxLng])
+  @@index([latitude, longitude])
+}
+
+model LandImage {
+  id        String   @id @default(uuid())
+  landId    String
+  land      Land     @relation(fields: [landId], references: [id], onDelete: Cascade)
+  url       String
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([landId])
+}
+
+model LandDocument {
+  id         String       @id @default(uuid())
+  landId     String
+  land       Land         @relation(fields: [landId], references: [id], onDelete: Cascade)
+  type       DocumentType
+  name       String
+  // Key of the file in private storage. Never sent to clients: they get a short-lived signed link.
+  storageKey String
+  mimeType   String
+  // SHA-256 fingerprint of the file; written to the chain on registration
+  sha256     String
+  createdAt  DateTime     @default(now())
+
+  @@index([landId])
+}
+
+model LandVerification {
+  id        String               @id @default(uuid())
+  landId    String
+  land      Land                 @relation(fields: [landId], references: [id], onDelete: Cascade)
+  notaryId  String
+  notary    User                 @relation(fields: [notaryId], references: [id])
+  decision  VerificationDecision
+  comment   String?
+  createdAt DateTime             @default(now())
+
+  @@index([landId])
+}
+
+model Favorite {
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  landId    String
+  land      Land     @relation(fields: [landId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([userId, landId])
+}
+
+// ---------------------------------------------------------------------------
+// Offers & transfers
+// ---------------------------------------------------------------------------
+
+model Offer {
+  id        String      @id @default(uuid())
+  landId    String
+  land      Land        @relation(fields: [landId], references: [id], onDelete: Cascade)
+  buyerId   String
+  buyer     User        @relation("buyer", fields: [buyerId], references: [id])
+  amount    Decimal     @db.Decimal(18, 2)
+  message   String?
+  status    OfferStatus @default(PENDING)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  transfer Transfer?
+
+  @@index([landId, status])
+  @@index([buyerId])
+}
+
+model Transfer {
+  id                String         @id @default(uuid())
+  landId            String
+  land              Land           @relation(fields: [landId], references: [id])
+  offerId           String?        @unique
+  offer             Offer?         @relation(fields: [offerId], references: [id])
+  sellerId          String
+  seller            User           @relation("transferSeller", fields: [sellerId], references: [id])
+  buyerId           String
+  buyer             User           @relation("transferBuyer", fields: [buyerId], references: [id])
+  notaryId          String?
+  notary            User?          @relation("transferNotary", fields: [notaryId], references: [id])
+  price             Decimal        @db.Decimal(18, 2)
+  currency          String
+  status            TransferStatus @default(PENDING_NOTARY)
+  notaryNote        String?
+  blockId           String?        @unique
+  block             Block?         @relation(fields: [blockId], references: [id])
+  createdAt         DateTime       @default(now())
+  claimedAt         DateTime?
+  completedAt       DateTime?
+  // Notarial deed reference, entered when the deed is signed
+  deedReference     String?
+  // Official land registry reference, entered once the sale is registered
+  registryReference String?
+  registeredAt      DateTime?
+
+  review Review?
+  steps  TransferStep[]
+
+  @@index([status])
+  @@index([landId])
+  @@index([notaryId])
+}
+
+model TransferStep {
+  id               String             @id @default(uuid())
+  transferId       String
+  transfer         Transfer           @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  type             TransferStepType
+  position         Int
+  status           TransferStepStatus @default(PENDING)
+  // Expected amount for payment steps
+  amount           Decimal?           @db.Decimal(18, 2)
+  // Receipt uploaded by the buyer (payment steps)
+  // Key of the receipt in private storage (never sent to clients)
+  proofKey         String?
+  proofName        String?
+  proofMime        String?
+  proofSha256      String?
+  // Bank / Mobile Money transaction reference given by the buyer
+  paymentReference String?
+  submittedById    String?
+  submittedBy      User?              @relation("stepSubmitter", fields: [submittedById], references: [id])
+  submittedAt      DateTime?
+  confirmedById    String?
+  confirmedBy      User?              @relation("stepConfirmer", fields: [confirmedById], references: [id])
+  confirmedAt      DateTime?
+  // Notary's note, or the reason for a rejection
+  note             String?
+  blockId          String?            @unique
+  block            Block?             @relation(fields: [blockId], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@unique([transferId, type])
+  @@index([transferId])
+}
+
+model Review {
+  id         String   @id @default(uuid())
+  transferId String   @unique
+  transfer   Transfer @relation(fields: [transferId], references: [id])
+  sellerId   String
+  seller     User     @relation("reviewSeller", fields: [sellerId], references: [id])
+  authorId   String
+  author     User     @relation("reviewAuthor", fields: [authorId], references: [id])
+  rating     Int
+  comment    String?
+  createdAt  DateTime @default(now())
+
+  @@index([sellerId])
+}
+
+// ---------------------------------------------------------------------------
+// Blockchain ledger
+// ---------------------------------------------------------------------------
+
+model Block {
+  id           String    @id @default(uuid())
+  index        Int       @unique
+  timestamp    DateTime
+  type         BlockType
+  landId       String?
+  land         Land?     @relation(fields: [landId], references: [id])
+  // Canonical JSON payload (land reference, from/to wallet, price, document hashes…)
+  data         Json
+  dataHash     String
+  previousHash String
+  nonce        Int
+  hash         String    @unique
+  // Ed25519 signature of `hash` by the registry authority
+  signature    String
+  signerId     String?
+  signer       User?     @relation(fields: [signerId], references: [id])
+  // Optional public-chain anchor (EVM tx hash)
+  anchorTxHash String?
+  createdAt    DateTime  @default(now())
+
+  transfer     Transfer?
+  transferStep TransferStep?
+
+  @@index([landId])
+  @@index([type])
+}
+
+// ---------------------------------------------------------------------------
+// Messaging, notifications, moderation
+// ---------------------------------------------------------------------------
+
+model Conversation {
+  id        String    @id @default(uuid())
+  landId    String
+  land      Land      @relation(fields: [landId], references: [id], onDelete: Cascade)
+  buyerId   String
+  buyer     User      @relation("convBuyer", fields: [buyerId], references: [id])
+  sellerId  String
+  seller    User      @relation("convSeller", fields: [sellerId], references: [id])
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  messages  Message[]
+
+  @@unique([landId, buyerId])
+  @@index([sellerId])
+}
+
+model Message {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         User         @relation(fields: [senderId], references: [id])
+  body           String
+  readAt         DateTime?
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  // i18n-friendly: the app translates `type` and interpolates `data`
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  @@index([userId, readAt])
+}
+
+model Report {
+  id         String       @id @default(uuid())
+  landId     String
+  land       Land         @relation(fields: [landId], references: [id], onDelete: Cascade)
+  reporterId String
+  reporter   User         @relation(fields: [reporterId], references: [id])
+  reason     String
+  details    String?
+  status     ReportStatus @default(OPEN)
+  createdAt  DateTime     @default(now())
+  resolvedAt DateTime?
+
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Admin oversight
+// ---------------------------------------------------------------------------
+
+// Append-only log of every sensitive action (role changes, verifications, transfers…)
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  action     String
+  entityType String
+  entityId   String?
+  metadata   Json?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([actorId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}

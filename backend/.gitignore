@@ -1,0 +1,7 @@
+node_modules
+dist
+.env
+.keys
+uploads/*
+storage/
+!uploads/.gitkeep
