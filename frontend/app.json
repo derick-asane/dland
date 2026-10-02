@@ -36,7 +36,14 @@
         }
       ],
       "expo-document-picker",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-notifications",
+        {
+          "color": "#1B7F5A",
+          "defaultChannel": "default"
+        }
+      ]
     ],
     "scheme": "dland"
   }

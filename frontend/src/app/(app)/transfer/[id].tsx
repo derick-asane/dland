@@ -4,6 +4,7 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as DocumentPicker from 'expo-document-picker';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { api, fileUrl, upload } from '@/api/client';
 import { openPrivateFile } from '@/api/files';
@@ -273,7 +274,17 @@ export default function TransferScreen() {
 }
 
 /** Title, message and input of the confirmation dialog for each action. */
-function promptProps(action: Action | null, t: ReturnType<typeof useTranslation>['t'], currency: string) {
+interface PromptText {
+  title: string;
+  message?: string;
+  inputLabel?: string;
+  inputRequired?: boolean;
+  confirmLabel?: string;
+  destructive?: boolean;
+}
+
+// Explicit types: inferring them from the typed translation keys is too deep for TypeScript.
+function promptProps(action: Action | null, t: TFunction, currency: string): PromptText {
   switch (action?.kind) {
     case 'claim':
       return { title: t('sale.claim'), message: t('sale.claimMessage', { currency }) };

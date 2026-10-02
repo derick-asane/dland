@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -11,6 +11,10 @@ import { useAuth } from '@/store/auth';
 import { ErrorState, Loading } from '@/components/ui';
 import { colors, font, radius, spacing } from '@/theme';
 import { errorMessage, formatDate, fullName } from '@/utils/format';
+import { getSocket } from '@/realtime/socket';
+import { useIsTyping } from '@/realtime/typing';
+
+const TYPING_SIGNAL_MS = 2000;
 
 export default function ChatScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -18,11 +22,22 @@ export default function ChatScreen() {
   const me = useAuth((s) => s.user);
   const queryClient = useQueryClient();
   const [body, setBody] = useState('');
+  const lastTypingSignal = useRef(0);
+  const otherIsTyping = useIsTyping(id);
+
+  // Tells the other person we are typing, at most every 2 seconds.
+  const onChangeText = (text: string) => {
+    setBody(text);
+    const now = Date.now();
+    if (text && now - lastTypingSignal.current > TYPING_SIGNAL_MS) {
+      lastTypingSignal.current = now;
+      getSocket()?.emit('typing', { conversationId: id });
+    }
+  };
 
   const query = useQuery({
     queryKey: ['messages', id],
     queryFn: async () => (await api.get<{ conversation: Conversation; items: Message[] }>(`/conversations/${id}/messages`)).data,
-    refetchInterval: 5000,
   });
 
   const send = useMutation({
@@ -38,10 +53,23 @@ export default function ChatScreen() {
   if (query.isError || !query.data) return <ErrorState message={errorMessage(query.error)} onRetry={() => query.refetch()} />;
   const { conversation, items } = query.data;
   const other = conversation.buyerId === me?.id ? conversation.seller : conversation.buyer;
+  // "Seen" under my latest message once the other person has read it.
+  const lastMine = items.find((m) => m.senderId === me?.id);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.background }} edges={['bottom']}>
-      <Stack.Screen options={{ title: fullName(other) }} />
+      <Stack.Screen
+        options={{
+          headerTitle: () => (
+            <View>
+              <Text style={font.h3}>{fullName(other)}</Text>
+              {otherIsTyping ? (
+                <Text style={{ color: colors.primary, fontSize: 12 }}>{t('messages.typing', { name: other.firstName })}</Text>
+              ) : null}
+            </View>
+          ),
+        }}
+      />
       <Pressable style={styles.landBar} onPress={() => router.push(`/land/${conversation.land.id}`)}>
         <Ionicons name="map-outline" size={16} color={colors.primary} />
         <Text style={[font.small, { flex: 1, color: colors.primary }]} numberOfLines={1}>
@@ -62,6 +90,7 @@ export default function ChatScreen() {
                 <Text style={{ color: mine ? '#fff' : colors.text, fontSize: 15 }}>{item.body}</Text>
                 <Text style={{ color: mine ? 'rgba(255,255,255,0.75)' : colors.textMuted, fontSize: 11, marginTop: 2 }}>
                   {formatDate(item.createdAt, true)}
+                  {item.id === lastMine?.id && item.readAt ? ` · ${t('messages.seen')}` : ''}
                 </Text>
               </View>
             );
@@ -70,7 +99,7 @@ export default function ChatScreen() {
         <View style={styles.composer}>
           <TextInput
             value={body}
-            onChangeText={setBody}
+            onChangeText={onChangeText}
             placeholder={t('messages.placeholder')}
             placeholderTextColor={colors.textMuted}
             style={styles.input}

@@ -7,6 +7,7 @@ import { authenticate, currentUser } from '../middleware/auth';
 import { param, validateBody } from '../middleware/validate';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors';
 import { publicUserSelect } from '../utils/serialize';
+import { assertNotFrozen } from './lands.shared';
 
 /**
  * Offer flow:
@@ -34,6 +35,7 @@ router.post('/', validateBody(createSchema), async (req, res) => {
   const land = await prisma.land.findUnique({ where: { id: body.landId } });
   if (!land) throw notFound('LAND_NOT_FOUND', 'Land not found');
   if (land.status !== 'PUBLISHED') throw badRequest('LAND_NOT_AVAILABLE', 'This land is not available for offers');
+  assertNotFrozen(land);
   if (land.ownerId === me.id) throw badRequest('OWN_LAND', 'You cannot make an offer on your own land');
 
   const existing = await prisma.offer.findFirst({ where: { landId: land.id, buyerId: me.id, status: 'PENDING' } });
@@ -83,6 +85,7 @@ router.post('/:id/accept', async (req, res) => {
   if (offer.land.ownerId !== me.id) throw forbidden('NOT_LAND_OWNER', 'You do not own this land');
   if (offer.status !== 'PENDING') throw badRequest('OFFER_NOT_PENDING', 'This offer is no longer pending');
   if (offer.land.status !== 'PUBLISHED') throw badRequest('LAND_NOT_AVAILABLE', 'This land is not available');
+  assertNotFrozen(offer.land);
 
   const others = await prisma.offer.findMany({
     where: { landId: offer.landId, status: 'PENDING', id: { not: offer.id } },

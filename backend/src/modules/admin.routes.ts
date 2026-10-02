@@ -6,6 +6,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { audit } from '../lib/audit';
 import { notify } from '../lib/notify';
+import { withReceipt } from '../lib/payments/service';
 import { authenticate, currentUser, requireRole } from '../middleware/auth';
 import { param, parseQuery, validateBody } from '../middleware/validate';
 import { badRequest, conflict, notFound } from '../utils/errors';
@@ -13,6 +14,7 @@ import { walletAddressFor } from '../utils/crypto';
 import { pageResult, paginate, paginationSchema } from '../utils/pagination';
 import { privateUserSelect, publicUserSelect } from '../utils/serialize';
 import { landCardInclude } from './lands.shared';
+import { paymentInclude } from './payments.routes';
 import { transferInclude } from './transfers.shared';
 
 /** Platform oversight: users & roles, seller applications, listings, transfers, reports, audit trail. */
@@ -25,13 +27,14 @@ router.use(authenticate, requireRole('ADMIN'));
 
 router.get('/stats', async (_req, res) => {
   const since = new Date(Date.now() - 30 * 24 * 3600 * 1000);
-  const [usersByRole, landsByStatus, transfersByStatus, volume, openReports, blocks, newUsers, recentActivity] =
+  const [usersByRole, landsByStatus, transfersByStatus, volume, openReports, openDisputes, blocks, newUsers, recentActivity, fees, fees30] =
     await Promise.all([
       prisma.user.groupBy({ by: ['role'], _count: true }),
       prisma.land.groupBy({ by: ['status'], _count: true }),
       prisma.transfer.groupBy({ by: ['status'], _count: true }),
       prisma.transfer.groupBy({ by: ['currency'], where: { status: 'COMPLETED' }, _sum: { price: true } }),
       prisma.report.count({ where: { status: 'OPEN' } }),
+      prisma.dispute.count({ where: { status: { in: ['OPEN', 'UNDER_REVIEW'] } } }),
       prisma.block.count(),
       prisma.user.count({ where: { createdAt: { gte: since } } }),
       prisma.auditLog.findMany({
@@ -39,6 +42,8 @@ router.get('/stats', async (_req, res) => {
         take: 15,
         include: { actor: { select: { id: true, firstName: true, lastName: true, role: true } } },
       }),
+      prisma.payment.groupBy({ by: ['currency'], where: { status: 'SUCCESSFUL' }, _sum: { amount: true }, _count: true }),
+      prisma.payment.groupBy({ by: ['currency'], where: { status: 'SUCCESSFUL', paidAt: { gte: since } }, _sum: { amount: true } }),
     ]);
   const toMap = <T extends { _count: number }>(rows: T[], key: keyof T) =>
     Object.fromEntries(rows.map((r) => [String(r[key]), r._count]));
@@ -48,6 +53,10 @@ router.get('/stats', async (_req, res) => {
     transfersByStatus: toMap(transfersByStatus, 'status'),
     salesVolume: volume.map((v) => ({ currency: v.currency, total: v._sum.price?.toString() ?? '0' })),
     openReports,
+    openDisputes,
+    // Platform revenue (listing fees), all time and last 30 days
+    feesCollected: fees.map((f) => ({ currency: f.currency, total: f._sum.amount ?? 0, count: f._count })),
+    feesLast30Days: fees30.map((f) => ({ currency: f.currency, total: f._sum.amount ?? 0 })),
     blocks,
     newUsersLast30Days: newUsers,
     recentActivity,
@@ -184,12 +193,14 @@ router.patch('/users/:id', validateBody(updateUserSchema), async (req, res) => {
 const landsQuery = paginationSchema.extend({
   q: z.string().trim().max(100).optional(),
   status: z.enum(['DRAFT', 'PENDING_VERIFICATION', 'REJECTED', 'PUBLISHED', 'UNDER_OFFER', 'SOLD', 'ARCHIVED']).optional(),
+  blocked: z.enum(['true']).optional(),
 });
 
 router.get('/lands', async (req, res) => {
   const f = parseQuery(landsQuery, req);
   const where: Prisma.LandWhereInput = {
     status: f.status,
+    blockedAt: f.blocked ? { not: null } : undefined,
     OR: f.q
       ? [
           { title: { contains: f.q, mode: 'insensitive' } },
@@ -206,23 +217,79 @@ router.get('/lands', async (req, res) => {
   res.json(pageResult(items, total, f.page, f.pageSize));
 });
 
-const suspendSchema = z.object({ reason: z.string().trim().min(3).max(2000) });
+const blockSchema = z.object({ reason: z.string().trim().min(3).max(2000) });
 
-/** Takes a listing off the market (e.g. after a fraud report). Chain history is never altered. */
-router.post('/lands/:id/suspend', validateBody(suspendSchema), async (req, res) => {
+/**
+ * Blocks a listing (fraud, abuse, a report found true…): it disappears from the public, pending
+ * offers and visits are cancelled, and the owner can no longer edit, relist or delete it.
+ * Chain history is never altered. Unblocking restores the listing exactly as it was.
+ */
+router.post('/lands/:id/block', validateBody(blockSchema), async (req, res) => {
   const land = await prisma.land.findUnique({ where: { id: param(req, 'id') } });
   if (!land) throw notFound('LAND_NOT_FOUND', 'Land not found');
+  if (land.blockedAt) throw badRequest('LAND_ALREADY_BLOCKED', 'This listing is already blocked');
   if (land.status === 'UNDER_OFFER') {
     throw badRequest('TRANSFER_IN_PROGRESS', 'A transfer is in progress; ask a notary to cancel it first');
   }
-  const { reason } = req.body as z.infer<typeof suspendSchema>;
-  await prisma.$transaction(async (tx) => {
+  const { reason } = req.body as z.infer<typeof blockSchema>;
+  const [offers, visits] = await Promise.all([
+    prisma.offer.findMany({ where: { landId: land.id, status: 'PENDING' } }),
+    prisma.visit.findMany({ where: { landId: land.id, status: { in: ['REQUESTED', 'CONFIRMED'] } } }),
+  ]);
+  const updated = await prisma.$transaction(async (tx) => {
     await tx.offer.updateMany({ where: { landId: land.id, status: 'PENDING' }, data: { status: 'CANCELLED' } });
-    await tx.land.update({ where: { id: land.id }, data: { status: 'ARCHIVED', rejectionReason: reason } });
-    await notify(land.ownerId, 'LAND_REJECTED', { landId: land.id, title: land.title, reason }, tx);
-    await audit({ action: 'LAND_SUSPENDED', entityType: 'Land', entityId: land.id, metadata: { reason }, req }, tx);
+    await tx.visit.updateMany({
+      where: { id: { in: visits.map((v) => v.id) } },
+      data: { status: 'DECLINED', closeReason: 'LISTING_UNAVAILABLE' },
+    });
+    const updated = await tx.land.update({
+      where: { id: land.id },
+      data: { status: 'ARCHIVED', statusBeforeBlock: land.status, blockedAt: new Date(), blockReason: reason },
+    });
+    const ref = { landId: land.id, title: land.title };
+    await notify(land.ownerId, 'LAND_BLOCKED', { ...ref, reason }, tx);
+    for (const o of offers) await notify(o.buyerId, 'OFFER_REJECTED', { ...ref, offerId: o.id }, tx);
+    for (const v of visits) await notify(v.visitorId, 'VISIT_DECLINED', { ...ref, visitId: v.id }, tx);
+    await audit({ action: 'LAND_BLOCKED', entityType: 'Land', entityId: land.id, metadata: { reason }, req }, tx);
+    return updated;
   });
-  res.json({ ok: true });
+  res.json({ land: updated });
+});
+
+router.post('/lands/:id/unblock', async (req, res) => {
+  const land = await prisma.land.findUnique({ where: { id: param(req, 'id') } });
+  if (!land) throw notFound('LAND_NOT_FOUND', 'Land not found');
+  if (!land.blockedAt) throw badRequest('LAND_NOT_BLOCKED', 'This listing is not blocked');
+  const updated = await prisma.$transaction(async (tx) => {
+    const updated = await tx.land.update({
+      where: { id: land.id },
+      data: { status: land.statusBeforeBlock ?? 'ARCHIVED', statusBeforeBlock: null, blockedAt: null, blockReason: null },
+    });
+    await notify(land.ownerId, 'LAND_UNBLOCKED', { landId: land.id, title: land.title }, tx);
+    await audit({ action: 'LAND_UNBLOCKED', entityType: 'Land', entityId: land.id, req }, tx);
+    return updated;
+  });
+  res.json({ land: updated });
+});
+
+const paymentsQuery = paginationSchema.extend({
+  status: z.enum(['PENDING', 'SUCCESSFUL', 'FAILED']).optional(),
+});
+
+/** Every platform fee payment, newest first. */
+router.get('/payments', async (req, res) => {
+  const f = parseQuery(paymentsQuery, req);
+  const where: Prisma.PaymentWhereInput = { status: f.status };
+  const [items, total] = await Promise.all([
+    prisma.payment.findMany({
+      where,
+      include: { ...paymentInclude, user: { select: publicUserSelect } },
+      orderBy: { createdAt: 'desc' },
+      ...paginate(f.page, f.pageSize),
+    }),
+    prisma.payment.count({ where }),
+  ]);
+  res.json(pageResult(items.map(withReceipt), total, f.page, f.pageSize));
 });
 
 const transfersQuery = paginationSchema.extend({

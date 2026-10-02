@@ -42,6 +42,7 @@ export default function CertificateScreen() {
       </Card>
 
       <Banner tone={ok ? 'success' : 'danger'} icon={ok ? 'shield-checkmark' : 'warning'} text={ok ? t('certificate.valid') : t('certificate.invalid')} />
+      {c.frozen ? <Banner tone="danger" icon="lock-closed" text={t('certificate.frozenWarning')} /> : null}
 
       <Card>
         <KeyValue label={t('certificate.currentOwner')} value={`${c.owner.firstName} ${c.owner.lastName}`} />

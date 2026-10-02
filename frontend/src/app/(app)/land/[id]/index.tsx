@@ -6,8 +6,9 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '@/api/client';
 import { openPrivateFile } from '@/api/files';
-import type { Conversation, Land } from '@/api/types';
+import type { Conversation, Land, Visit } from '@/api/types';
 import { useLand } from '@/hooks/useLand';
+import { can, useAuth } from '@/store/auth';
 import { FavoriteButton } from '@/components/FavoriteButton';
 import { ImageGallery } from '@/components/ImageGallery';
 import { ParcelPreview } from '@/components/map/ParcelPreview';
@@ -43,6 +44,8 @@ export default function LandDetailScreen() {
   const [reportOpen, setReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState<ReportReason>('FRAUD');
   const [confirm, setConfirm] = useState<'archive' | 'delete' | null>(null);
+  const [blockAction, setBlockAction] = useState<'block' | 'unblock' | null>(null);
+  const isAdmin = can.administer(useAuth((s) => s.user));
 
   const refreshAll = () => {
     void queryClient.invalidateQueries({ queryKey: ['land', id] });
@@ -71,6 +74,17 @@ export default function LandDetailScreen() {
     onError: (err) => showAlert(t('common.error'), errorMessage(err)),
   });
 
+  const block = useMutation({
+    mutationFn: ({ kind, reason }: { kind: 'block' | 'unblock'; reason: string }) =>
+      api.post(`/admin/lands/${id}/${kind}`, kind === 'block' ? { reason } : {}),
+    onSuccess: () => {
+      setBlockAction(null);
+      refreshAll();
+      void queryClient.invalidateQueries({ queryKey: ['admin'] });
+    },
+    onError: (err) => showAlert(t('common.error'), errorMessage(err)),
+  });
+
   const report = useMutation({
     mutationFn: (details: string) => api.post(`/lands/${id}/reports`, { reason: reportReason, details: details || undefined }),
     onSuccess: () => {
@@ -84,9 +98,12 @@ export default function LandDetailScreen() {
   if (query.isError || !query.data) return <ErrorState message={t('land.notFound')} onRetry={() => query.refetch()} />;
   const land = query.data;
   const isOwner = Boolean(land.isOwner);
-  const canBuy = !isOwner && land.status === 'PUBLISHED' && !land.myOffer;
+  const canBuy = !isOwner && land.status === 'PUBLISHED' && !land.myOffer && !land.frozen;
 
-  const footer = isOwner ? (
+  const blocked = Boolean(land.blockedAt);
+  const canVisit = !isOwner && land.status === 'PUBLISHED' && !land.frozen && !blocked;
+
+  const footer = blocked ? null : isOwner ? (
     <OwnerActions land={land} onAction={setConfirm} />
   ) : land.status === 'PUBLISHED' || land.status === 'UNDER_OFFER' ? (
     <Row>
@@ -121,7 +138,11 @@ export default function LandDetailScreen() {
         <ImageGallery images={land.images} />
         <View style={{ padding: spacing.lg }}>
           <Row style={{ flexWrap: 'wrap', marginBottom: spacing.sm }}>
-            <Badge label={t(`status.${land.status}`)} tone={toneForStatus(land.status)} />
+            {blocked ? (
+              <Badge label={t('block.badge')} tone="danger" icon="ban" />
+            ) : (
+              <Badge label={t(`status.${land.status}`)} tone={toneForStatus(land.status)} />
+            )}
             <Badge
               label={land.registeredOnChain ? t('land.onChain') : t('land.notOnChain')}
               tone={land.registeredOnChain ? 'chain' : 'neutral'}
@@ -141,7 +162,34 @@ export default function LandDetailScreen() {
             </Text>
           </Row>
 
-          <StatusBanner land={land} />
+          {blocked ? (
+            <Banner tone="danger" icon="ban" text={t('block.banner', { reason: land.blockReason ?? '' })} />
+          ) : null}
+          {land.frozen ? (
+            <Banner tone="danger" icon="lock-closed" text={t('dispute.frozenBanner')} />
+          ) : land.openDisputes ? (
+            <Banner tone="warning" icon="warning" text={t('dispute.openBanner', { count: land.openDisputes })} />
+          ) : null}
+          {blocked ? null : <StatusBanner land={land} />}
+
+          {isOwner && land.pendingVisits ? (
+            <Card onPress={() => router.push({ pathname: '/visits', params: { as: 'owner' } })} style={{ backgroundColor: colors.warningLight, borderColor: colors.warningLight }}>
+              <Row>
+                <Ionicons name="walk" size={20} color={colors.warning} />
+                <Text style={{ color: colors.warning, flex: 1, fontWeight: '600' }}>{t('visit.pendingOnLand', { count: land.pendingVisits })}</Text>
+                <Ionicons name="chevron-forward" size={18} color={colors.warning} />
+              </Row>
+            </Card>
+          ) : null}
+          {land.myVisit ? <MyVisitCard visit={land.myVisit} /> : canVisit ? (
+            <Button
+              title={t('visit.request')}
+              icon="walk-outline"
+              variant="secondary"
+              style={{ marginBottom: spacing.md }}
+              onPress={() => router.push({ pathname: '/visit/new', params: { landId: land.id } })}
+            />
+          ) : null}
 
           {land.myOffer ? (
             <Banner
@@ -255,8 +303,25 @@ export default function LandDetailScreen() {
             </Card>
           </Section>
 
-          {!isOwner ? (
+          {!isOwner && land.registeredOnChain ? (
+            <Button
+              title={t('dispute.challenge')}
+              variant="ghost"
+              icon="shield-half-outline"
+              onPress={() => router.push({ pathname: '/dispute/new', params: { landId: land.id } })}
+            />
+          ) : null}
+          {!isOwner && !isAdmin ? (
             <Button title={t('land.report')} variant="ghost" icon="flag-outline" onPress={() => setReportOpen(true)} />
+          ) : null}
+          {isAdmin && land.status !== 'DRAFT' ? (
+            <Section title={t('block.adminSection')}>
+              {blocked ? (
+                <Button title={t('block.unblock')} icon="checkmark-circle-outline" variant="secondary" onPress={() => setBlockAction('unblock')} />
+              ) : (
+                <Button title={t('block.action')} icon="ban-outline" variant="danger" onPress={() => setBlockAction('block')} />
+              )}
+            </Section>
           ) : null}
         </View>
       </Screen>
@@ -274,6 +339,18 @@ export default function LandDetailScreen() {
       </PromptModal>
 
       <PromptModal
+        visible={blockAction !== null}
+        title={blockAction === 'unblock' ? t('block.unblock') : t('block.action')}
+        message={blockAction === 'unblock' ? t('block.unblockConfirm') : t('block.confirm')}
+        inputLabel={blockAction === 'block' ? t('block.reason') : undefined}
+        inputRequired={blockAction === 'block'}
+        destructive={blockAction === 'block'}
+        loading={block.isPending}
+        onClose={() => setBlockAction(null)}
+        onConfirm={(reason) => blockAction && block.mutate({ kind: blockAction, reason })}
+      />
+
+      <PromptModal
         visible={confirm !== null}
         title={confirm === 'delete' ? t('common.delete') : t('land.archive')}
         message={confirm === 'delete' ? t('land.deleteConfirm') : t('land.archiveConfirm')}
@@ -283,6 +360,26 @@ export default function LandDetailScreen() {
         onConfirm={() => confirm && action.mutate(confirm)}
       />
     </>
+  );
+}
+
+/** The visitor's own request on this land: status and date, opens the visit. */
+function MyVisitCard({ visit }: { visit: Visit }) {
+  const { t } = useTranslation();
+  const confirmed = visit.status === 'CONFIRMED' && visit.scheduledAt;
+  return (
+    <Card
+      onPress={() => router.push(`/visit/${visit.id}`)}
+      style={{ backgroundColor: confirmed ? colors.primaryLight : colors.infoLight, borderColor: confirmed ? colors.primaryLight : colors.infoLight }}
+    >
+      <Row>
+        <Ionicons name={confirmed ? 'calendar' : 'walk'} size={20} color={confirmed ? colors.primaryDark : colors.info} />
+        <Text style={{ color: confirmed ? colors.primaryDark : colors.info, flex: 1, fontWeight: '600' }}>
+          {confirmed ? t('visit.scheduledFor', { date: formatDate(visit.scheduledAt!, true) }) : t('visit.waitingOwner')}
+        </Text>
+        <Ionicons name="chevron-forward" size={18} color={confirmed ? colors.primaryDark : colors.info} />
+      </Row>
+    </Card>
   );
 }
 

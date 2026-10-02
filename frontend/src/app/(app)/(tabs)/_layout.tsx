@@ -7,12 +7,13 @@ import { useTranslation } from 'react-i18next';
 import { can, useAuth } from '@/store/auth';
 import { useConversations, useUnreadNotifications } from '@/hooks/useUnread';
 import { colors } from '@/theme';
-import type { IconName } from '@/components/ui';
+import { fullName } from '@/utils/format';
+import { Avatar, type IconName } from '@/components/ui';
 
 function NotificationBell() {
   const { data: count = 0 } = useUnreadNotifications();
   return (
-    <Pressable onPress={() => router.push('/notifications')} hitSlop={10} style={{ marginRight: 16 }}>
+    <Pressable onPress={() => router.push('/notifications')} hitSlop={10}>
       <Ionicons name="notifications-outline" size={24} color={colors.text} />
       {count > 0 ? (
         <View
@@ -33,6 +34,22 @@ function NotificationBell() {
         </View>
       ) : null}
     </Pressable>
+  );
+}
+
+/** Header actions on every tab: notifications, then the signed-in user's avatar (opens the profile). */
+function HeaderActions() {
+  const { t } = useTranslation();
+  const user = useAuth((s) => s.user);
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16, marginRight: 16 }}>
+      <NotificationBell />
+      {user ? (
+        <Pressable onPress={() => router.push('/profile')} hitSlop={8} accessibilityRole="button" accessibilityLabel={t('tabs.profile')}>
+          <Avatar url={user.avatarUrl} name={fullName(user)} size={32} />
+        </Pressable>
+      ) : null}
+    </View>
   );
 }
 
@@ -71,7 +88,7 @@ export default function TabsLayout() {
         tabBarLabelStyle: { fontSize: 12, lineHeight: 16, fontWeight: '600', marginTop: 2 },
         tabBarAllowFontScaling: true,
         headerTitleStyle: { color: colors.text },
-        headerRight: () => <NotificationBell />,
+        headerRight: () => <HeaderActions />,
       }}
     >
       <Tabs.Screen name="index" options={{ title: t('tabs.explore'), tabBarIcon: icon('search') }} />

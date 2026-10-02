@@ -7,6 +7,7 @@ export const prisma = new PrismaClient({
   omit: {
     landDocument: { storageKey: true },
     transferStep: { proofKey: true },
+    disputeEvidence: { storageKey: true },
   },
 });
 

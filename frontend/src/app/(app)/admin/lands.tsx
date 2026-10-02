@@ -9,7 +9,7 @@ import { ChipGroup, EmptyState, ErrorState, Loading } from '@/components/ui';
 import { colors, radius, spacing } from '@/theme';
 import { errorMessage } from '@/utils/format';
 
-type StatusFilter = LandStatus | 'ALL';
+type StatusFilter = LandStatus | 'ALL' | 'BLOCKED';
 const STATUSES: LandStatus[] = ['PENDING_VERIFICATION', 'PUBLISHED', 'UNDER_OFFER', 'SOLD', 'REJECTED', 'DRAFT', 'ARCHIVED'];
 
 export default function AdminLandsScreen() {
@@ -24,7 +24,12 @@ export default function AdminLandsScreen() {
     queryFn: async ({ pageParam }) =>
       (
         await api.get<Page<Land>>('/admin/lands', {
-          params: { page: pageParam, q: search || undefined, status: status === 'ALL' ? undefined : status },
+          params: {
+            page: pageParam,
+            q: search || undefined,
+            status: status === 'ALL' || status === 'BLOCKED' ? undefined : status,
+            blocked: status === 'BLOCKED' ? 'true' : undefined,
+          },
         })
       ).data,
     getNextPageParam: (last) => (last.page < last.totalPages ? last.page + 1 : undefined),
@@ -60,7 +65,11 @@ export default function AdminLandsScreen() {
           <ChipGroup
             value={status}
             onChange={setStatus}
-            options={[{ value: 'ALL' as StatusFilter, label: t('admin.all') }, ...STATUSES.map((s) => ({ value: s as StatusFilter, label: t(`status.${s}`) }))]}
+            options={[
+              { value: 'ALL' as StatusFilter, label: t('admin.all') },
+              { value: 'BLOCKED' as StatusFilter, label: t('block.badge') },
+              ...STATUSES.map((s) => ({ value: s as StatusFilter, label: t(`status.${s}`) })),
+            ]}
           />
         </View>
       }

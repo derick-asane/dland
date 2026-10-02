@@ -32,7 +32,11 @@ export function LandCard({ land, showStatus, onPress }: Props) {
           </View>
         )}
         <View style={styles.topRow}>
-          {showStatus ? (
+          {land.blockedAt ? (
+            <Badge label={t('block.badge')} tone="danger" icon="ban" />
+          ) : land.frozen ? (
+            <Badge label={t('dispute.frozenBadge')} tone="danger" icon="lock-closed" />
+          ) : showStatus ? (
             <Badge label={t(`status.${land.status}`)} tone={toneForStatus(land.status)} />
           ) : land.registeredOnChain ? (
             <Badge label={t('explore.verified')} tone="success" icon="shield-checkmark" />

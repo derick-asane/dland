@@ -25,6 +25,8 @@ export default function AdminScreen() {
 
   const menu: { label: string; icon: IconName; href: Href; badge?: number }[] = [
     { label: t('admin.reports'), icon: 'flag-outline', href: '/admin/reports', badge: s.openReports },
+    { label: t('admin.disputes'), icon: 'shield-half-outline', href: '/admin/disputes', badge: s.openDisputes },
+    { label: t('pay.adminTitle'), icon: 'wallet-outline', href: '/admin/payments' },
     { label: t('admin.users'), icon: 'people-outline', href: '/admin/users' },
     { label: t('admin.listings'), icon: 'map-outline', href: '/admin/lands' },
     { label: t('admin.transfers'), icon: 'swap-horizontal-outline', href: '/admin/transfers' },
@@ -44,7 +46,23 @@ export default function AdminScreen() {
           <Stat icon="swap-horizontal" label={t('admin.stats.transfers')} value={s.transfersByStatus.COMPLETED ?? 0} />
           <Stat icon="cube" label={t('admin.stats.blocks')} value={s.blocks} />
           <Stat icon="flag" label={t('admin.stats.openReports')} value={s.openReports} />
+          <Stat icon="shield-half" label={t('admin.openDisputes')} value={s.openDisputes} />
         </View>
+        {s.feesCollected.length > 0 ? (
+          <Card style={{ marginTop: spacing.md }}>
+            <Text style={font.small}>{t('pay.revenue')}</Text>
+            {s.feesCollected.map((f) => (
+              <Text key={f.currency} style={font.h2}>
+                {formatMoney(f.total, f.currency)}
+              </Text>
+            ))}
+            {s.feesLast30Days.map((f) => (
+              <Text key={f.currency} style={font.small}>
+                {t('pay.revenue30', { amount: formatMoney(f.total, f.currency) })}
+              </Text>
+            ))}
+          </Card>
+        ) : null}
         {s.salesVolume.length > 0 ? (
           <Card style={{ marginTop: spacing.md }}>
             <Text style={font.small}>{t('admin.stats.volume')}</Text>

@@ -98,6 +98,44 @@ enum BlockType {
   PAYMENT_CONFIRMED
   // The sale was recorded at the official land registry
   REGISTRY_RECORDED
+  // A notary froze the land because of an ownership dispute (no sale possible)
+  LAND_FROZEN
+  // The freeze was lifted (dispute dismissed or withdrawn, or settled officially)
+  LAND_UNFROZEN
+}
+
+enum DisputeReason {
+  OWNERSHIP_CLAIM // "this land is mine"
+  DOUBLE_SALE // sold to several buyers
+  FORGED_DOCUMENTS
+  BOUNDARY_CONFLICT // the parcel takes part of someone else's land
+  INHERITANCE // family / succession conflict
+  OTHER
+}
+
+enum DisputeStatus {
+  OPEN // filed, waiting for a notary
+  UNDER_REVIEW // a notary handles it
+  UPHELD // the claim is founded: the land stays frozen and off the market
+  DISMISSED // the claim is unfounded: any freeze is lifted
+  WITHDRAWN // the claimant dropped it
+}
+
+enum PaymentPurpose {
+  LISTING_FEE // paid by the owner before the notary verifies a listing
+}
+
+enum PaymentStatus {
+  PENDING // waiting for the payer to approve on their phone
+  SUCCESSFUL
+  FAILED
+}
+
+enum VisitStatus {
+  REQUESTED // waiting for the owner
+  CONFIRMED // the owner set the date
+  DECLINED // the owner refused or called it off
+  CANCELLED // the visitor cancelled
 }
 
 enum NotificationType {
@@ -118,6 +156,20 @@ enum NotificationType {
   PAYMENT_CONFIRMED
   PAYMENT_REJECTED
   TITLE_REGISTERED
+  DISPUTE_OPENED // to the owner and notaries
+  DISPUTE_TAKEN // a notary handles the dispute
+  DISPUTE_RESPONSE // the other party responded or added evidence
+  LAND_FROZEN
+  LAND_UNFROZEN
+  DISPUTE_RESOLVED
+  LAND_BLOCKED // an admin took the listing down
+  LAND_UNBLOCKED
+  VISIT_REQUESTED
+  VISIT_CONFIRMED
+  VISIT_DECLINED
+  VISIT_CANCELLED
+  LISTING_FEE_PAID
+  LISTING_FEE_FAILED
   SYSTEM
 }
 
@@ -178,6 +230,12 @@ model User {
   auditLogs           AuditLog[]
   stepsSubmitted      TransferStep[]     @relation("stepSubmitter")
   stepsConfirmed      TransferStep[]     @relation("stepConfirmer")
+  pushTokens          PushToken[]
+  disputesFiled       Dispute[]          @relation("disputeClaimant")
+  disputesHandled     Dispute[]          @relation("disputeNotary")
+  disputeEvidence     DisputeEvidence[]
+  visits              Visit[]
+  payments            Payment[]
 
   @@index([role])
 }
@@ -211,13 +269,13 @@ model PasswordReset {
 // ---------------------------------------------------------------------------
 
 model Land {
-  id                String     @id @default(uuid())
+  id                String      @id @default(uuid())
   // Human readable reference, e.g. DL-2026-000042
-  reference         String     @unique
+  reference         String      @unique
   title             String
   description       String
-  price             Decimal    @db.Decimal(18, 2)
-  currency          String     @default("USD")
+  price             Decimal     @db.Decimal(18, 2)
+  currency          String      @default("USD")
   areaSqm           Float
   landType          LandType
   address           String
@@ -229,21 +287,28 @@ model Land {
   // Official cadastral identifiers
   parcelNumber      String
   titleDeedNumber   String
-  status            LandStatus @default(DRAFT)
+  status            LandStatus  @default(DRAFT)
   ownerId           String
-  owner             User       @relation("owner", fields: [ownerId], references: [id])
+  owner             User        @relation("owner", fields: [ownerId], references: [id])
   notaryId          String?
-  notary            User?      @relation("notary", fields: [notaryId], references: [id])
+  notary            User?       @relation("notary", fields: [notaryId], references: [id])
   rejectionReason   String?
   // Set once a notary has registered the land on the chain
-  registeredOnChain Boolean    @default(false)
+  registeredOnChain Boolean     @default(false)
   // Parcel outline as a GeoJSON Polygon ([lng, lat] ring). Its SHA-256 is written to the chain.
   boundary          Json?
   boundaryHash      String?
   // Geodesic area measured from the boundary (vs. the declared areaSqm)
   boundaryAreaSqm   Float?
   // Set once the current boundary is recorded in a block; the boundary is then immutable
-  boundaryOnChain   Boolean    @default(false)
+  boundaryOnChain   Boolean     @default(false)
+  // A notary froze the land because of a dispute: no offer, sale or relisting until lifted
+  frozen            Boolean     @default(false)
+  // An admin blocked the listing: hidden from the public, the owner cannot edit or relist it
+  blockedAt         DateTime?
+  blockReason       String?
+  // Status to restore when the block is lifted
+  statusBeforeBlock LandStatus?
   // Bounding box of the boundary, used to prefilter overlap checks and map queries
   minLat            Float?
   maxLat            Float?
@@ -251,9 +316,9 @@ model Land {
   maxLng            Float?
   submittedAt       DateTime?
   publishedAt       DateTime?
-  viewsCount        Int        @default(0)
-  createdAt         DateTime   @default(now())
-  updatedAt         DateTime   @updatedAt
+  viewsCount        Int         @default(0)
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
 
   images        LandImage[]
   documents     LandDocument[]
@@ -264,6 +329,9 @@ model Land {
   conversations Conversation[]
   reports       Report[]
   blocks        Block[]
+  disputes      Dispute[]
+  visits        Visit[]
+  payments      Payment[]
 
   @@unique([parcelNumber, country])
   @@index([status])
@@ -495,16 +563,84 @@ model Message {
 }
 
 model Notification {
-  id        String           @id @default(uuid())
-  userId    String
-  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  type      NotificationType
+  id           String           @id @default(uuid())
+  userId       String
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type         NotificationType
   // i18n-friendly: the app translates `type` and interpolates `data`
-  data      Json?
-  readAt    DateTime?
-  createdAt DateTime         @default(now())
+  data         Json?
+  readAt       DateTime?
+  createdAt    DateTime         @default(now())
+  // Set once delivered live (socket) and by push. Only committed notifications are dispatched,
+  // so a rolled-back transaction never produces a phantom push.
+  dispatchedAt DateTime?
 
   @@index([userId, readAt])
+  @@index([dispatchedAt])
+}
+
+/**
+ * Expo push token of one device of a user.
+ */
+model PushToken {
+  id         String   @id @default(uuid())
+  token      String   @unique
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  platform   String
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Disputes
+// ---------------------------------------------------------------------------
+
+model Dispute {
+  id             String        @id @default(uuid())
+  landId         String
+  land           Land          @relation(fields: [landId], references: [id], onDelete: Cascade)
+  claimantId     String
+  claimant       User          @relation("disputeClaimant", fields: [claimantId], references: [id])
+  reason         DisputeReason
+  description    String
+  status         DisputeStatus @default(OPEN)
+  // The owner's side of the story
+  ownerResponse  String?
+  notaryId       String?
+  notary         User?         @relation("disputeNotary", fields: [notaryId], references: [id])
+  // Set while this dispute keeps the land frozen
+  frozenAt       DateTime?
+  resolutionNote String?
+  resolvedAt     DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  evidence DisputeEvidence[]
+
+  @@index([landId, status])
+  @@index([status])
+  @@index([claimantId])
+}
+
+/**
+ * Evidence files are private documents (see lib/storage.ts).
+ */
+model DisputeEvidence {
+  id           String   @id @default(uuid())
+  disputeId    String
+  dispute      Dispute  @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  uploadedById String
+  uploadedBy   User     @relation(fields: [uploadedById], references: [id])
+  name         String
+  storageKey   String
+  mimeType     String
+  sha256       String
+  createdAt    DateTime @default(now())
+
+  @@index([disputeId])
 }
 
 model Report {
@@ -541,4 +677,67 @@ model AuditLog {
   @@index([actorId])
   @@index([entityType, entityId])
   @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Land visits
+// ---------------------------------------------------------------------------
+
+/**
+ * A request to visit a listed land. The owner confirms it with a date and practical details.
+ */
+model Visit {
+  id          String      @id @default(uuid())
+  landId      String
+  land        Land        @relation(fields: [landId], references: [id], onDelete: Cascade)
+  visitorId   String
+  visitor     User        @relation(fields: [visitorId], references: [id])
+  status      VisitStatus @default(REQUESTED)
+  // What the visitor asked for
+  preferredAt DateTime?
+  message     String?
+  // Set by the owner on confirmation
+  scheduledAt DateTime?
+  ownerNote   String? // meeting point, contact, availability
+  // Why it was declined or cancelled
+  closeReason String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([landId, status])
+  @@index([visitorId])
+}
+
+// ---------------------------------------------------------------------------
+// Platform fees (mobile money). Sale money never goes through DLand.
+// ---------------------------------------------------------------------------
+
+model Payment {
+  id                String         @id @default(uuid())
+  userId            String
+  user              User           @relation(fields: [userId], references: [id])
+  landId            String?
+  land              Land?          @relation(fields: [landId], references: [id], onDelete: SetNull)
+  purpose           PaymentPurpose
+  amount            Int
+  currency          String         @default("XAF")
+  // Payer's number, international format without "+" (e.g. 2376XXXXXXXX)
+  phone             String
+  provider          String // campay | simulator
+  // Provider's transaction reference, set once the collection request is accepted
+  reference         String?        @unique
+  // MTN / ORANGE, as reported by the provider
+  operator          String?
+  operatorReference String?
+  // Code the payer can dial if the approval prompt does not appear
+  ussdCode          String?
+  status            PaymentStatus  @default(PENDING)
+  failureReason     String?
+  paidAt            DateTime?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@index([userId])
+  @@index([landId, purpose, status])
+  @@index([status, createdAt])
 }

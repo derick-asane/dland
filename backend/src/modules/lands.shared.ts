@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { Land, LandStatus, Prisma } from '@prisma/client';
 import type { AuthUser } from '../middleware/auth';
+import { badRequest, forbidden } from '../utils/errors';
 import { publicUserSelect } from '../utils/serialize';
 
 /** Statuses anyone (even anonymous visitors) may see. */
@@ -41,6 +42,16 @@ export function canViewLand(land: Pick<Land, 'status' | 'ownerId'>, user?: AuthU
  */
 export function canDownloadDocuments(land: Pick<Land, 'ownerId'>, user?: AuthUser) {
   return land.ownerId === user?.id || isStaff(user);
+}
+
+/** A land frozen by a dispute cannot be offered on, sold, transferred or relisted. */
+export function assertNotFrozen(land: Pick<Land, 'frozen'>) {
+  if (land.frozen) throw badRequest('LAND_FROZEN', 'This land is frozen because of an ownership dispute');
+}
+
+/** A listing blocked by an admin cannot be edited, relisted, approved or visited. */
+export function assertNotBlocked(land: Pick<Land, 'blockedAt'>) {
+  if (land.blockedAt) throw forbidden('LAND_BLOCKED', 'This listing was blocked by an administrator');
 }
 
 export const newLandReference = () =>

@@ -88,7 +88,11 @@ function TimelineItem({
                   ? 'cash-outline'
                   : block.type === 'REGISTRY_RECORDED'
                     ? 'library-outline'
-                    : 'flag'
+                    : block.type === 'LAND_FROZEN'
+                      ? 'lock-closed'
+                      : block.type === 'LAND_UNFROZEN'
+                        ? 'lock-open'
+                        : 'flag'
             }
             size={14}
             color="#fff"
@@ -124,6 +128,16 @@ function TimelineItem({
             {d.receiptSha256 ? (
               <Text style={[font.mono, { color: colors.textMuted }]}>SHA-256 {shortHash(String(d.receiptSha256), 12)}</Text>
             ) : null}
+          </View>
+        ) : block.type === 'LAND_FROZEN' || block.type === 'LAND_UNFROZEN' ? (
+          <View style={{ marginTop: spacing.sm }}>
+            <Text style={font.body}>
+              {String(d.disputeReference)}
+              {block.type === 'LAND_FROZEN'
+                ? ` · ${t(`dispute.reasons.${String(d.reason) as 'OTHER'}`)}`
+                : ` · ${t(`dispute.outcome.${String(d.outcome) as 'DISMISSED'}`)}`}
+            </Text>
+            <Party label={t('history.owner')} party={partyName(d.owner)} wallet={d.owner} />
           </View>
         ) : block.type === 'REGISTRY_RECORDED' ? (
           <>

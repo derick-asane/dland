@@ -100,6 +100,8 @@ router.get('/certificate/:reference', async (req, res) => {
     owner: land.owner,
     // The database owner must match the owner recorded by the most recent block.
     ownerMatchesChain: chainOwner === land.owner.walletAddress,
+    // Frozen by an ownership dispute: the certificate holder should not buy or lend against it.
+    frozen: land.frozen,
     chainValid: history.valid,
     registration: registration && { index: registration.index, hash: registration.hash, timestamp: registration.timestamp },
     lastTransfer: lastTransfer && { index: lastTransfer.index, hash: lastTransfer.hash, timestamp: lastTransfer.timestamp },

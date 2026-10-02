@@ -10,7 +10,7 @@ import { authenticate, currentUser, requireRole } from '../middleware/auth';
 import { param, parseQuery, validateBody } from '../middleware/validate';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors';
 import { privateUserSelect } from '../utils/serialize';
-import { landDetailInclude } from './lands.shared';
+import { assertNotBlocked, assertNotFrozen, landDetailInclude } from './lands.shared';
 import { escrowSelect, initialSteps, PAYMENT_STEPS, transferInclude, transferReference } from './transfers.shared';
 
 /**
@@ -58,6 +58,8 @@ const decisionSchema = z.object({ comment: z.string().trim().max(2000).optional(
 router.post('/lands/:id/approve', notaryOnly, validateBody(decisionSchema), async (req, res) => {
   const notaryId = currentUser(req).id;
   const land = await pendingLand(param(req, 'id'), notaryId);
+  assertNotFrozen(land);
+  assertNotBlocked(land);
   const { comment } = req.body as z.infer<typeof decisionSchema>;
   const notary = await prisma.user.findUniqueOrThrow({ where: { id: notaryId }, select: { walletAddress: true } });
 
@@ -225,6 +227,7 @@ const claimSchema = z.object({
 router.post('/transfers/:id/claim', notaryOnly, validateBody(claimSchema), async (req, res) => {
   const notaryId = currentUser(req).id;
   const transfer = await loadTransfer(param(req, 'id'), notaryId, ['PENDING_NOTARY']);
+  assertNotFrozen(transfer.land);
   const notary = await prisma.user.findUniqueOrThrow({ where: { id: notaryId }, select: escrowSelect });
   if (!notary.escrowBankName || !notary.escrowAccountNumber) {
     throw badRequest('ESCROW_DETAILS_REQUIRED', 'Add your escrow account before taking a file');
@@ -330,6 +333,7 @@ const completeSchema = z.object({
 router.post('/transfers/:id/complete', notaryOnly, validateBody(completeSchema), async (req, res) => {
   const notaryId = currentUser(req).id;
   const transfer = await loadTransfer(param(req, 'id'), notaryId, ['IN_PROGRESS']);
+  assertNotFrozen(transfer.land);
   const unpaid = transfer.steps.filter((s) => PAYMENT_STEPS.includes(s.type) && s.status !== 'CONFIRMED');
   if (unpaid.length > 0) throw badRequest('PAYMENTS_NOT_CONFIRMED', 'All payments must be confirmed before the deed is signed');
   const { deedReference, comment } = req.body as z.infer<typeof completeSchema>;

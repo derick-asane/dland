@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
+import { isExpoPushToken } from '../lib/push';
 import { authenticate, currentUser } from '../middleware/auth';
 import { imageUpload, publicPath, removeUpload } from '../middleware/upload';
 import { param, validateBody } from '../middleware/validate';
@@ -40,6 +41,30 @@ router.post('/me/avatar', authenticate, imageUpload.single('avatar'), async (req
   });
   if (previous.avatarUrl) removeUpload(previous.avatarUrl);
   res.json({ user });
+});
+
+const pushTokenSchema = z.object({
+  token: z.string().trim().refine(isExpoPushToken, 'Not an Expo push token'),
+  platform: z.enum(['ios', 'android']),
+});
+
+/** Registers this device for push notifications (one row per device; re-registering refreshes it). */
+router.post('/me/push-tokens', authenticate, validateBody(pushTokenSchema), async (req, res) => {
+  const { token, platform } = req.body as z.infer<typeof pushTokenSchema>;
+  const userId = currentUser(req).id;
+  // A device that changes account must stop receiving the previous user's notifications.
+  await prisma.pushToken.upsert({
+    where: { token },
+    create: { token, platform, userId },
+    update: { userId, platform, lastSeenAt: new Date() },
+  });
+  res.status(204).end();
+});
+
+/** Called on sign-out: this device stops receiving push notifications. */
+router.delete('/me/push-tokens', authenticate, validateBody(z.object({ token: z.string().trim() })), async (req, res) => {
+  await prisma.pushToken.deleteMany({ where: { token: (req.body as { token: string }).token, userId: currentUser(req).id } });
+  res.status(204).end();
 });
 
 /** Personal dashboard numbers shown on the profile screen. */
