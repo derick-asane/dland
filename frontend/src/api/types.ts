@@ -20,7 +20,9 @@ export type BlockType =
   | 'OWNERSHIP_TRANSFERRED'
   | 'BOUNDARY_RECORDED'
   | 'PAYMENT_CONFIRMED'
-  | 'REGISTRY_RECORDED';
+  | 'REGISTRY_RECORDED'
+  | 'LAND_FROZEN'
+  | 'LAND_UNFROZEN';
 
 /** GeoJSON Polygon; positions are [longitude, latitude]. */
 export interface Boundary {
@@ -126,7 +128,20 @@ export interface Land {
   verifications?: Verification[];
   isFavorite?: boolean;
   isOwner?: boolean;
+  /** Frozen by an ownership dispute: no offer, sale or relisting. */
+  frozen: boolean;
+  /** Disputes waiting for or under notary review (listing detail only). */
+  openDisputes?: number;
   myOffer?: Offer | null;
+  /** Blocked by an admin: hidden from the public, locked for the owner. */
+  blockedAt?: string | null;
+  blockReason?: string | null;
+  /** My active visit request (listing detail, visitors only). */
+  myVisit?: Visit | null;
+  /** Visit requests waiting for my answer (listing detail, owner only). */
+  pendingVisits?: number;
+  /** Owner only: the listing fee for this listing. */
+  listingFee?: ListingFeeState;
   _count?: { favorites: number; offers?: number };
 }
 
@@ -249,6 +264,7 @@ export interface Certificate {
   boundaryHash: string | null;
   boundaryAreaSqm: number | null;
   ownerMatchesChain: boolean;
+  frozen: boolean;
   chainValid: boolean;
   registration: { index: number; hash: string; timestamp: string } | null;
   lastTransfer: { index: number; hash: string; timestamp: string } | null;
@@ -296,6 +312,20 @@ export type NotificationType =
   | 'PAYMENT_CONFIRMED'
   | 'PAYMENT_REJECTED'
   | 'TITLE_REGISTERED'
+  | 'DISPUTE_OPENED'
+  | 'DISPUTE_TAKEN'
+  | 'DISPUTE_RESPONSE'
+  | 'LAND_FROZEN'
+  | 'LAND_UNFROZEN'
+  | 'DISPUTE_RESOLVED'
+  | 'LAND_BLOCKED'
+  | 'LAND_UNBLOCKED'
+  | 'VISIT_REQUESTED'
+  | 'VISIT_CONFIRMED'
+  | 'VISIT_DECLINED'
+  | 'VISIT_CANCELLED'
+  | 'LISTING_FEE_PAID'
+  | 'LISTING_FEE_FAILED'
   | 'SYSTEM';
 
 export interface AppNotification {
@@ -333,6 +363,9 @@ export interface AdminStats {
   transfersByStatus: Partial<Record<TransferStatus, number>>;
   salesVolume: { currency: string; total: string }[];
   openReports: number;
+  openDisputes: number;
+  feesCollected: { currency: string; total: number; count: number }[];
+  feesLast30Days: { currency: string; total: number }[];
   blocks: number;
   newUsersLast30Days: number;
   recentActivity: AuditLog[];
@@ -394,4 +427,108 @@ export interface MapLand {
   price?: string;
   currency?: string;
   images?: LandImage[];
+}
+
+export type DisputeReason = 'OWNERSHIP_CLAIM' | 'DOUBLE_SALE' | 'FORGED_DOCUMENTS' | 'BOUNDARY_CONFLICT' | 'INHERITANCE' | 'OTHER';
+export type DisputeStatus = 'OPEN' | 'UNDER_REVIEW' | 'UPHELD' | 'DISMISSED' | 'WITHDRAWN';
+
+export interface DisputeEvidence {
+  id: string;
+  name: string;
+  mimeType: string;
+  sha256: string;
+  createdAt: string;
+  uploadedById: string;
+  uploadedBy: PublicUser;
+}
+
+export interface ListingFeeState {
+  required: boolean;
+  amount: number;
+  currency: string;
+  paid: boolean;
+  paymentId: string | null;
+  pendingPaymentId: string | null;
+}
+
+export type PaymentStatus = 'PENDING' | 'SUCCESSFUL' | 'FAILED';
+
+/** A platform fee paid with mobile money. */
+export interface Payment {
+  id: string;
+  receipt: string;
+  userId: string;
+  landId: string | null;
+  purpose: 'LISTING_FEE';
+  amount: number;
+  currency: string;
+  phone: string;
+  provider: 'campay' | 'simulator';
+  reference: string | null;
+  operator: string | null;
+  operatorReference: string | null;
+  ussdCode: string | null;
+  status: PaymentStatus;
+  failureReason: string | null;
+  paidAt: string | null;
+  createdAt: string;
+  land?: { id: string; reference: string; title: string } | null;
+  user?: PublicUser;
+}
+
+export interface PaymentsConfig {
+  listingFee: { amount: number; currency: string };
+  provider: 'campay' | 'simulator';
+  sandbox: boolean;
+}
+
+export type VisitStatus = 'REQUESTED' | 'CONFIRMED' | 'DECLINED' | 'CANCELLED';
+
+export interface Visit {
+  id: string;
+  landId: string;
+  visitorId: string;
+  status: VisitStatus;
+  preferredAt: string | null;
+  message: string | null;
+  scheduledAt: string | null;
+  ownerNote: string | null;
+  closeReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  land?: Pick<Land, 'id' | 'reference' | 'title' | 'address' | 'city' | 'country' | 'status' | 'ownerId' | 'images'> & { owner: PublicUser };
+  visitor?: PublicUser;
+}
+
+export interface Dispute {
+  id: string;
+  /** e.g. DL-DS-1A2B3C4D */
+  reference: string;
+  landId: string;
+  claimantId: string;
+  reason: DisputeReason;
+  description: string;
+  status: DisputeStatus;
+  ownerResponse: string | null;
+  notaryId: string | null;
+  frozenAt: string | null;
+  resolutionNote: string | null;
+  resolvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  land: {
+    id: string;
+    reference: string;
+    title: string;
+    city: string;
+    country: string;
+    status: LandStatus;
+    frozen: boolean;
+    ownerId: string;
+    owner: PublicUser;
+    images: LandImage[];
+  };
+  claimant: PublicUser;
+  notary: PublicUser | null;
+  evidence: DisputeEvidence[];
 }

@@ -18,6 +18,9 @@ import notificationsRoutes from './modules/notifications.routes';
 import chainRoutes from './modules/chain.routes';
 import filesRoutes from './modules/files.routes';
 import adminRoutes from './modules/admin.routes';
+import disputesRoutes from './modules/disputes.routes';
+import visitsRoutes from './modules/visits.routes';
+import paymentsRoutes from './modules/payments.routes';
 
 export function createApp() {
   const app = express();
@@ -35,7 +38,14 @@ export function createApp() {
     res.json({ status: 'ok', time: new Date().toISOString() });
   });
 
-  const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 50, standardHeaders: true, legacyHeaders: false });
+  // Guards password guessing; session upkeep (/me, /refresh) runs on every app start and is not limited.
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 50,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.path === '/me' || req.path === '/refresh',
+  });
 
   app.use('/api/auth', authLimiter, authRoutes);
   app.use('/api/users', usersRoutes);
@@ -43,6 +53,9 @@ export function createApp() {
   app.use('/api/offers', offersRoutes);
   app.use('/api/transfers', transfersRoutes);
   app.use('/api/notary', notaryRoutes);
+  app.use('/api/disputes', disputesRoutes);
+  app.use('/api/visits', visitsRoutes);
+  app.use('/api/payments', paymentsRoutes);
   app.use('/api/conversations', conversationsRoutes);
   app.use('/api/notifications', notificationsRoutes);
   app.use('/api/chain', chainRoutes);

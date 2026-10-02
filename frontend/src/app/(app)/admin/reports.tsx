@@ -32,7 +32,7 @@ export default function ReportsScreen() {
 
   const suspend = useMutation({
     mutationFn: async ({ report, reason }: { report: Report; reason: string }) => {
-      await api.post(`/admin/lands/${report.land.id}/suspend`, { reason });
+      await api.post(`/admin/lands/${report.land.id}/block`, { reason });
       await api.patch(`/admin/reports/${report.id}`, { status: 'RESOLVED' });
     },
     onSuccess: () => {
@@ -70,15 +70,20 @@ export default function ReportsScreen() {
             <Row style={{ marginTop: spacing.md, flexWrap: 'wrap' }}>
               <Button title={t('admin.dismiss')} variant="ghost" small onPress={() => resolve.mutate({ id: r.id, next: 'DISMISSED' })} />
               <Button title={t('admin.resolve')} variant="secondary" small onPress={() => resolve.mutate({ id: r.id, next: 'RESOLVED' })} />
-              <Button title={t('admin.suspendListing')} variant="danger" small onPress={() => setSuspending(r)} />
+              {r.land.blockedAt ? (
+                <Badge label={t('block.badge')} tone="danger" icon="ban" />
+              ) : (
+                <Button title={t('block.action')} variant="danger" small onPress={() => setSuspending(r)} />
+              )}
             </Row>
           ) : null}
         </Card>
       ))}
       <PromptModal
         visible={Boolean(suspending)}
-        title={t('admin.suspendListing')}
-        inputLabel={t('admin.suspendReason')}
+        title={t('block.action')}
+        message={t('block.confirm')}
+        inputLabel={t('block.reason')}
         inputRequired
         destructive
         loading={suspend.isPending}

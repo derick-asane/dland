@@ -5,13 +5,14 @@ import { useTranslation } from 'react-i18next';
 import { api } from '@/api/client';
 import type { Land, Transfer } from '@/api/types';
 import { useAuth } from '@/store/auth';
+import { DisputeList } from '@/components/DisputeList';
 import { LandCard } from '@/components/LandCard';
 import { TransferCard } from '@/components/TransferCard';
 import { Banner, ChipGroup, EmptyState, ErrorState, Loading, Screen, Segmented } from '@/components/ui';
 import { spacing } from '@/theme';
 import { errorMessage } from '@/utils/format';
 
-type Tab = 'listings' | 'transfers';
+type Tab = 'listings' | 'transfers' | 'disputes';
 type View = 'new' | 'active' | 'done';
 
 /** Notary desk: verify new listings and handle sale files (payments are made off-platform). */
@@ -26,9 +27,10 @@ export default function NotaryScreen() {
         options={[
           { value: 'listings', label: t('notary.listings') },
           { value: 'transfers', label: t('notary.transfers') },
+          { value: 'disputes', label: t('notary.disputes') },
         ]}
       />
-      {tab === 'listings' ? <ListingQueue /> : <TransferQueue />}
+      {tab === 'listings' ? <ListingQueue /> : tab === 'transfers' ? <TransferQueue /> : <DisputeList />}
     </Screen>
   );
 }

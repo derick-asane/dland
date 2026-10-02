@@ -147,6 +147,8 @@ function ReviewStep({
   });
   const blocked = Boolean(report.data?.overlaps.some((o) => o.registeredOnChain));
   const ready = done.photos && done.boundary && done.documents && !blocked;
+  const fee = land.listingFee;
+  const feeDue = Boolean(fee?.required && !fee.paid);
 
   const submit = useMutation({
     mutationFn: () => api.post(`/lands/${land.id}/submit`),
@@ -197,11 +199,35 @@ function ReviewStep({
         </Section>
       ) : null}
 
+      {fee?.required ? (
+        <Section title={t('pay.listingFee')}>
+          <Card>
+            {fee.paid ? (
+              <Row>
+                <Ionicons name="checkmark-circle" size={22} color={colors.primary} />
+                <Text style={[font.body, { flex: 1 }]}>{t('pay.feePaid', { amount: formatMoney(fee.amount, fee.currency) })}</Text>
+              </Row>
+            ) : (
+              <>
+                <Text style={[font.h2, { color: colors.primaryDark }]}>{formatMoney(fee.amount, fee.currency)}</Text>
+                <Text style={[font.small, { marginBottom: spacing.md }]}>{t('pay.why')}</Text>
+                <Button
+                  title={fee.pendingPaymentId ? t('pay.resume') : t('pay.payButton', { amount: formatMoney(fee.amount, fee.currency) })}
+                  icon="phone-portrait-outline"
+                  disabled={!ready}
+                  onPress={() => router.push({ pathname: '/pay/listing-fee', params: { landId: land.id } })}
+                />
+              </>
+            )}
+          </Card>
+        </Section>
+      ) : null}
+
       <Banner tone="info" icon="ribbon-outline" text={t('wizard.notaryNext')} />
       <Button
         title={t('land.submitForVerification')}
         icon="send-outline"
-        disabled={!ready}
+        disabled={!ready || feeDue}
         loading={submit.isPending}
         onPress={() => submit.mutate()}
       />

@@ -84,6 +84,9 @@ export default function ProfileScreen() {
         <ListItem icon="person-outline" title={t('profile.publicProfile')} onPress={() => router.push(`/user/${user.id}`)} />
         <ListItem icon="pricetags-outline" title={t('profile.offers')} onPress={() => router.push('/offers')} />
         <ListItem icon="swap-horizontal-outline" title={t('profile.transfers')} onPress={() => router.push('/transfers')} />
+        <ListItem icon="walk-outline" title={t('visit.mine')} onPress={() => router.push('/visits')} />
+        <ListItem icon="wallet-outline" title={t('pay.mine')} onPress={() => router.push('/payments')} />
+        <ListItem icon="shield-half-outline" title={t('dispute.mine')} onPress={() => router.push('/disputes')} />
         {can.notarize(user) ? (
           <ListItem
             icon="wallet-outline"

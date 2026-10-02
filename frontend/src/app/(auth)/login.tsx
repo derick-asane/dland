@@ -70,7 +70,6 @@ export default function LoginScreen() {
 
       <View style={{ marginTop: spacing.xxl, alignItems: 'center', gap: spacing.md }}>
         <LanguagePicker />
-        {__DEV__ ? <Text style={font.small}>{t('auth.demoHint')}</Text> : null}
       </View>
     </Screen>
   );

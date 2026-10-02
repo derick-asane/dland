@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '@/api/client';
 import { LanguagePicker } from '@/components/LanguagePicker';
+import { NotificationSettings } from '@/components/NotificationSettings';
 import { Button, Card, Screen, Section, TextField } from '@/components/ui';
 import { errorMessage } from '@/utils/format';
 import { showAlert } from '@/utils/alert';
@@ -28,6 +29,9 @@ export default function SettingsScreen() {
         <Card>
           <LanguagePicker />
         </Card>
+      </Section>
+      <Section title={t('push.title')}>
+        <NotificationSettings />
       </Section>
       <Section title={t('profile.changePassword')}>
         <TextField label={t('profile.currentPassword')} value={current} onChangeText={setCurrent} secureTextEntry />

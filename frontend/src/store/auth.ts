@@ -3,6 +3,7 @@ import { api, refreshSession, session } from '@/api/client';
 import { tokenStorage } from '@/api/tokenStorage';
 import type { Language, User } from '@/api/types';
 import { changeLanguage } from '@/i18n';
+import { disablePush } from '@/notifications/push';
 
 interface AuthResponse {
   user: User;
@@ -68,6 +69,8 @@ export const useAuth = create<AuthState>((set, get) => ({
   },
 
   async logout() {
+    // This device must stop receiving the account's push notifications.
+    await disablePush();
     const refreshToken = await tokenStorage.getRefreshToken();
     if (refreshToken) await api.post('/auth/logout', { refreshToken }).catch(() => undefined);
     await tokenStorage.setRefreshToken(null);

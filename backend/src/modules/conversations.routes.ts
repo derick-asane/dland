@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { notify } from '../lib/notify';
+import { emitToUser } from '../lib/realtime';
 import { authenticate, currentUser } from '../middleware/auth';
 import { param, parseQuery, validateBody } from '../middleware/validate';
 import { badRequest, forbidden, notFound } from '../utils/errors';
@@ -76,10 +77,16 @@ router.get('/:id/messages', async (req, res) => {
     orderBy: { createdAt: 'desc' },
     take: 50,
   });
-  await prisma.message.updateMany({
+  const readAt = new Date();
+  const read = await prisma.message.updateMany({
     where: { conversationId: conversation.id, senderId: { not: userId }, readAt: null },
-    data: { readAt: new Date() },
+    data: { readAt },
   });
+  // Read receipt: the other person's "Seen" appears instantly.
+  if (read.count > 0) {
+    const other = conversation.buyerId === userId ? conversation.sellerId : conversation.buyerId;
+    emitToUser(other, 'messages:read', { conversationId: conversation.id, readAt });
+  }
   const { messages: _last, ...meta } = conversation;
   res.json({ conversation: meta, items: messages });
 });
@@ -96,6 +103,8 @@ router.post('/:id/messages', validateBody(sendSchema), async (req, res) => {
   ]);
   const recipient = conversation.buyerId === userId ? conversation.sellerId : conversation.buyerId;
   const sender = conversation.buyerId === userId ? conversation.buyer : conversation.seller;
+  // Instant delivery to the recipient, and to the sender's other devices.
+  for (const user of [recipient, userId]) emitToUser(user, 'message:new', { conversationId: conversation.id, message });
   await notify(recipient, 'NEW_MESSAGE', {
     conversationId: conversation.id,
     title: conversation.land.title,

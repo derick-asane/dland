@@ -3,6 +3,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { listingFeeState } from '../lib/payments/service';
 import { audit } from '../lib/audit';
 import { areaCheck, buildBoundary, findOverlaps, type BoundaryGeometry } from '../lib/geo';
 import { notify, notifyRole } from '../lib/notify';
@@ -10,12 +11,14 @@ import { authenticate, currentUser, optionalAuth, requireRole } from '../middlew
 import { discardIncoming, imageUpload, privateUpload, publicPath, removeUpload, storePrivate } from '../middleware/upload';
 import { privateStorage } from '../lib/storage';
 import { param, parseQuery, validateBody } from '../middleware/validate';
-import { badRequest, conflict, forbidden, notFound } from '../utils/errors';
+import { AppError, badRequest, conflict, forbidden, notFound } from '../utils/errors';
 import { pageResult, paginate, paginationSchema } from '../utils/pagination';
 import {
   canDownloadDocuments,
   canViewLand,
   EDITABLE_STATUSES,
+  assertNotBlocked,
+  assertNotFrozen,
   isStaff,
   landCardInclude,
   landDetailInclude,
@@ -174,15 +177,23 @@ router.get('/:id', optionalAuth, async (req, res) => {
   if (!isOwner) {
     await prisma.land.update({ where: { id: land.id }, data: { viewsCount: { increment: 1 } } });
   }
-  const [favorite, myOffer] = req.user
+  const openDisputes = await prisma.dispute.count({ where: { landId: land.id, status: { in: ['OPEN', 'UNDER_REVIEW'] } } });
+  const [favorite, myOffer, myVisit, pendingVisits] = req.user
     ? await Promise.all([
         prisma.favorite.findUnique({ where: { userId_landId: { userId: req.user.id, landId: land.id } } }),
         prisma.offer.findFirst({
           where: { landId: land.id, buyerId: req.user.id, status: { in: ['PENDING', 'ACCEPTED'] } },
           orderBy: { createdAt: 'desc' },
         }),
+        isOwner
+          ? null
+          : prisma.visit.findFirst({
+              where: { landId: land.id, visitorId: req.user.id, status: { in: ['REQUESTED', 'CONFIRMED'] } },
+              orderBy: { createdAt: 'desc' },
+            }),
+        isOwner ? prisma.visit.count({ where: { landId: land.id, status: 'REQUESTED' } }) : 0,
       ])
-    : [null, null];
+    : [null, null, null, 0];
 
   // Everyone sees which documents exist and their fingerprints; only the owner and staff can open them.
   const canOpen = canDownloadDocuments(land, req.user);
@@ -190,9 +201,14 @@ router.get('/:id', optionalAuth, async (req, res) => {
     land: {
       ...land,
       documents: land.documents.map((d) => ({ ...d, canOpen })),
+      openDisputes,
       isFavorite: Boolean(favorite),
       isOwner,
       myOffer,
+      myVisit,
+      pendingVisits,
+      // Owner only: whether the listing fee for this listing is paid.
+      listingFee: isOwner ? await listingFeeState(land.id, land.ownerId) : undefined,
     },
   });
 });
@@ -238,6 +254,8 @@ async function ownedLand(landId: string, userId: string) {
   const land = await prisma.land.findUnique({ where: { id: landId } });
   if (!land) throw notFound('LAND_NOT_FOUND', 'Land not found');
   if (land.ownerId !== userId) throw forbidden('NOT_LAND_OWNER', 'You do not own this land');
+  // Every owner action (edit, photos, documents, boundary, submit, archive, delete) is locked while blocked.
+  assertNotBlocked(land);
   return land;
 }
 
@@ -467,6 +485,7 @@ router.get('/:id/overlaps', authenticate, async (req, res) => {
 router.post('/:id/submit', authenticate, requireRole('CLIENT', 'ADMIN'), async (req, res) => {
   const land = await ownedLand(param(req, 'id'), currentUser(req).id);
   assertEditable(land.status);
+  assertNotFrozen(land);
   const [images, documents] = await Promise.all([
     prisma.landImage.count({ where: { landId: land.id } }),
     prisma.landDocument.findMany({ where: { landId: land.id }, select: { type: true } }),
@@ -487,6 +506,11 @@ router.post('/:id/submit', authenticate, requireRole('CLIENT', 'ADMIN'), async (
   if (blocking.length > 0) {
     throw badRequest('PARCEL_OVERLAP', 'This boundary overlaps a parcel already registered on the blockchain', { overlaps: blocking });
   }
+  // Last check: the listing fee (paid with mobile money) covers the notary's verification.
+  const fee = await listingFeeState(land.id, land.ownerId);
+  if (!fee.paid) {
+    throw new AppError(402, 'LISTING_FEE_REQUIRED', 'Pay the listing fee before submitting', { amount: fee.amount, currency: fee.currency });
+  }
   const updated = await prisma.land.update({
     where: { id: land.id },
     data: { status: 'PENDING_VERIFICATION', submittedAt: new Date(), rejectionReason: null },
@@ -504,11 +528,19 @@ router.post('/:id/archive', authenticate, async (req, res) => {
     throw badRequest('LAND_NOT_ARCHIVABLE', 'This listing cannot be archived now');
   }
   const pending = await prisma.offer.findMany({ where: { landId: land.id, status: 'PENDING' } });
+  const visits = await prisma.visit.findMany({ where: { landId: land.id, status: { in: ['REQUESTED', 'CONFIRMED'] } } });
   await prisma.$transaction(async (tx) => {
     await tx.offer.updateMany({ where: { landId: land.id, status: 'PENDING' }, data: { status: 'CANCELLED' } });
+    await tx.visit.updateMany({
+      where: { id: { in: visits.map((v) => v.id) } },
+      data: { status: 'DECLINED', closeReason: 'LISTING_UNAVAILABLE' },
+    });
     await tx.land.update({ where: { id: land.id }, data: { status: 'ARCHIVED' } });
     for (const offer of pending) {
       await notify(offer.buyerId, 'OFFER_REJECTED', { landId: land.id, title: land.title, offerId: offer.id }, tx);
+    }
+    for (const v of visits) {
+      await notify(v.visitorId, 'VISIT_DECLINED', { landId: land.id, title: land.title, visitId: v.id }, tx);
     }
   });
   await audit({ action: 'LAND_ARCHIVED', entityType: 'Land', entityId: land.id, req });
